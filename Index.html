@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cricket DRS Replay</title>
+<style>
+:root{--bg:#0b1b12;--fg:#f2f7f3;--ac:#e53935;--mut:#9db5a4;--card:#142a1d;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif}
+body{padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);display:flex;flex-direction:column}
+header{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--mut)}
+#stage{position:relative;flex:1;min-height:0;background:#000}
+video{width:100%;height:100%;object-fit:contain;background:#000}
+#rec{position:absolute;top:8px;left:8px;background:#000a;padding:4px 10px;border-radius:12px;font-size:13px}
+#rec b{color:var(--ac)}
+.bar{padding:10px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button{border:0;border-radius:12px;padding:14px 16px;font-size:16px;background:var(--card);color:var(--fg)}
+button.on{background:#2e7d32}
+#drs{background:var(--ac);font-weight:700;font-size:20px;flex:1 1 100%;padding:18px}
+#start{background:#2e7d32;font-weight:700;flex:1 1 100%;padding:18px}
+.hide{display:none}
+small{color:var(--mut);padding:0 14px 8px;text-align:center}
+</style>
+</head>
+<body>
+<header><span>🏏 Cricket DRS Replay</span><span id="info">Buffer: last ~90s</span></header>
+<div id="stage">
+  <video id="live" autoplay muted playsinline></video>
+  <video id="play" class="hide" playsinline controls></video>
+  <div id="rec" class="hide"><b>●</b> REC <span id="cnt">0</span>s</div>
+</div>
+<div class="bar" id="liveBar">
+  <button id="start">Start camera</button>
+  <button id="drs" class="hide">⚠ DRS – Replay last ball</button>
+</div>
+<div class="bar hide" id="replayBar">
+  <button data-seg="0" class="seg on">Latest</button>
+  <button data-seg="1" class="seg">-15s</button>
+  <button data-seg="2" class="seg">-30s</button>
+  <button data-seg="3" class="seg">-45s</button>
+  <button data-sp="0.25" class="sp">0.25x</button>
+  <button data-sp="0.5" class="sp">0.5x</button>
+  <button data-sp="1" class="sp on">1x</button>
+  <button id="back" style="flex:1 1 100%;background:#2e7d32">Back to live</button>
+</div>
+<small id="msg">Fix the phone on a tripod behind the stumps. Nothing leaves the phone; clips older than ~90s are deleted automatically.</small>
+<script>
+const SEG_MS=15000, KEEP=6;
+const $=id=>document.getElementById(id);
+let stream,rec,segs=[],timer,tick,started=0,cur=0,speed=1;
+
+function mime(){
+  for(const m of ['video/webm;codecs=vp8','video/webm','video/mp4'])
+    if(window.MediaRecorder&&MediaRecorder.isTypeSupported(m))return m;
+  return '';
+}
+function newSegment(){
+  const chunks=[], mt=mime();
+  rec=new MediaRecorder(stream,mt?{mimeType:mt,videoBitsPerSecond:2000000}:{});
+  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  rec.onstop=()=>{
+    if(chunks.length){
+      segs.unshift({blob:new Blob(chunks,{type:rec.mimeType||mt}),t:Date.now()});
+      while(segs.length>KEEP)segs.pop(); // delete oldest
+    }
+    if(stream&&stream.active&&!$('live').classList.contains('hide')&&!window._stopping)newSegment();
+  };
+  rec.start();
+  started=Date.now();
+  timer=setTimeout(()=>{if(rec.state==='recording')rec.stop()},SEG_MS);
+}
+async function startCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30}},audio:true});
+  }catch(e){
+    try{stream=await navigator.mediaDevices.getUserMedia({video:true})}
+    catch(err){$('msg').textContent='Camera blocked: '+err.name+'. Open this page directly in Chrome (not inside another app) and allow camera access.';return}
+  }
+  if(!window.MediaRecorder){$('msg').textContent='This browser does not support recording. Use Chrome on Android.';return}
+  $('live').srcObject=stream;
+  $('start').classList.add('hide');$('drs').classList.remove('hide');$('rec').classList.remove('hide');
+  newSegment();
+  tick=setInterval(()=>{$('cnt').textContent=Math.round((Date.now()-started)/1000)},500);
+}
+function showSeg(i){
+  if(!segs[i])return;
+  cur=i;
+  document.querySelectorAll('.seg').forEach(b=>b.classList.toggle('on',+b.dataset.seg===i));
+  const v=$('play');
+  if(v._url)URL.revokeObjectURL(v._url);
+  v._url=URL.createObjectURL(segs[i].blob);
+  v.src=v._url;v.playbackRate=speed;v.play().catch(()=>{});
+  v.onloadedmetadata=()=>{v.playbackRate=speed};
+}
+function openReplay(){
+  if(!rec||rec.state!=='recording')return;
+  clearTimeout(timer);
+  window._stopping=true;
+  const done=rec.onstop;
+  rec.onstop=function(){done.call(rec);window._stopping=false;
+    $('live').classList.add('hide');$('play').classList.remove('hide');
+    $('liveBar').classList.add('hide');$('replayBar').classList.remove('hide');
+    document.querySelectorAll('.seg').forEach(b=>b.classList.toggle('hide',+b.dataset.seg>=segs.length));
+    showSeg(0);
+  };
+  rec.stop();
+}
+function backLive(){
+  const v=$('play');v.pause();
+  $('play').classList.add('hide');$('live').classList.remove('hide');
+  $('replayBar').classList.add('hide');$('liveBar').classList.remove('hide');
+  newSegment();
+}
+$('start').onclick=startCam;
+$('drs').onclick=openReplay;
+$('back').onclick=backLive;
+document.querySelectorAll('.seg').forEach(b=>b.onclick=()=>showSeg(+b.dataset.seg));
+document.querySelectorAll('.sp').forEach(b=>b.onclick=()=>{
+  speed=+b.dataset.sp;$('play').playbackRate=speed;
+  document.querySelectorAll('.sp').forEach(x=>x.classList.toggle('on',x===b));
+});
+</script>
+</body>
+</html>
